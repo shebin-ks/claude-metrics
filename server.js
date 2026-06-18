@@ -207,15 +207,79 @@ app.get('/', (req, res) => {
   `).join('') || '<tr><td colspan="8" class="empty">No telemetry data yet.</td></tr>';
 
   // --- Event log table (new-schema only) ---
-  const recentEvents = [...metricEvents]
+  const limitParam = req.query.v || req.query.limit;
+  const limit = limitParam === 'all' ? metricEvents.length : (parseInt(limitParam) || 100);
+
+  // Deduplicate: 1 row per request (email+sessionId+second), track main vs auxiliary separately
+  const deduped = {};
+  const sortedEvents = [...metricEvents]
     .filter(e => e.costIncrement !== undefined)
-    .sort((a, b) => new Date(b.date) - new Date(a.date))
-    .slice(0, 100);
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  sortedEvents.forEach(e => {
+    const eventTime = new Date(e.date).getTime();
+    const roundedTime = Math.floor(eventTime / 1000) * 1000;
+    const key = `${e.email}::${e.sessionId}::${roundedTime}`;
+    const source = e.querySource || 'unknown';
+
+    if (deduped[key]) {
+      // Merge with existing event, track by source
+      deduped[key].costIncrement += e.costIncrement;
+      deduped[key].inputTokens += e.inputTokens;
+      deduped[key].outputTokens += e.outputTokens;
+      deduped[key].cacheReadTokens += e.cacheReadTokens;
+      deduped[key].cacheCreationTokens += e.cacheCreationTokens;
+      // Track breakdown by source
+      if (!deduped[key].bySource[source]) {
+        deduped[key].bySource[source] = { cost: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+      }
+      deduped[key].bySource[source].cost += e.costIncrement;
+      deduped[key].bySource[source].input += e.inputTokens;
+      deduped[key].bySource[source].output += e.outputTokens;
+      deduped[key].bySource[source].cacheRead += e.cacheReadTokens;
+      deduped[key].bySource[source].cacheCreation += e.cacheCreationTokens;
+      if (!deduped[key].querySources.includes(source)) {
+        deduped[key].querySources.push(source);
+      }
+    } else {
+      const bySource = {};
+      bySource[source] = {
+        cost: e.costIncrement,
+        input: e.inputTokens,
+        output: e.outputTokens,
+        cacheRead: e.cacheReadTokens,
+        cacheCreation: e.cacheCreationTokens
+      };
+      deduped[key] = {
+        ...e,
+        querySources: [source],
+        bySource
+      };
+    }
+  });
+
+  const recentEvents = Object.values(deduped).slice(0, limit);
 
   const eventRows = recentEvents.map(e => {
+    const bySourceInfo = {};
+    const mainMetrics = e.bySource?.main || { cost: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+    const auxMetrics = e.bySource?.auxiliary || { cost: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+
+    if (e.bySource) {
+      for (const [source, metrics] of Object.entries(e.bySource)) {
+        bySourceInfo[source] = {
+          cost: `$${metrics.cost.toFixed(6)}`,
+          input_tokens: metrics.input.toLocaleString(),
+          output_tokens: metrics.output.toLocaleString(),
+          cache_read_tokens: metrics.cacheRead.toLocaleString(),
+          cache_creation_tokens: metrics.cacheCreation.toLocaleString()
+        };
+      }
+    }
     const details = {
       'model': e.model,
-      'query_source': e.querySource,
+      'query_sources': e.querySources,
+      'breakdown_by_source': bySourceInfo,
       'organization.id': e.organizationId,
       'user.id': e.userId,
       'user.account_id': e.accountId,
@@ -226,30 +290,47 @@ app.get('/', (req, res) => {
     const modelBadge = e.model
       ? `<span class="badge model-badge" title="${e.model}">${e.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>`
       : '<span class="na">—</span>';
-    const qsBadge = e.querySource
-      ? `<span class="badge qs-badge">${e.querySource}</span>`
-      : '<span class="na">—</span>';
+
+    // Determine which sources are present
+    const hasBoth = mainMetrics.input > 0 && auxMetrics.input > 0;
+    const hasMain = mainMetrics.input > 0;
+    const hasAux = auxMetrics.input > 0;
+    const sourceLabel = hasBoth ? 'main · aux' : (hasAux ? 'auxiliary' : 'main');
+
+    // Show costs: if both exist, show main then aux
+    const costDisplay = hasBoth
+      ? `<div class="val-main">$${mainMetrics.cost.toFixed(5)}</div><div style="font-size:0.7rem;color:#94a3b8">+ $${auxMetrics.cost.toFixed(5)}</div>`
+      : `<div class="val-main">$${e.costIncrement.toFixed(5)}</div>`;
+
+    // Show primary source on top, secondary below
+    const primaryInput = hasAux && !hasMain ? auxMetrics.input : mainMetrics.input;
+    const secondaryInput = hasBoth ? auxMetrics.input : 0;
+    const primaryOutput = hasAux && !hasMain ? auxMetrics.output : mainMetrics.output;
+    const secondaryOutput = hasBoth ? auxMetrics.output : 0;
+    const primaryCR = hasAux && !hasMain ? auxMetrics.cacheRead : mainMetrics.cacheRead;
+    const secondaryCR = hasBoth ? auxMetrics.cacheRead : 0;
+    const primaryCC = hasAux && !hasMain ? auxMetrics.cacheCreation : mainMetrics.cacheCreation;
+    const secondaryCC = hasBoth ? auxMetrics.cacheCreation : 0;
 
     return `
     <tr>
-      <td class="dim">${new Date(e.date).toLocaleString()}</td>
+      <td class="dim">${new Date(e.date).toLocaleString()}<br><span style="font-size:0.68rem;color:#94a3b8">${new Date(e.date).toLocaleDateString()}</span></td>
       <td class="bold">${e.email}</td>
       <td>${modelBadge}</td>
-      <td>${qsBadge}</td>
-      <td class="cost-inc">${e.costIncrement > 0 ? '+$' + e.costIncrement.toFixed(6) : '—'}</td>
-      <td>${(e.inputTokens || 0).toLocaleString()}</td>
-      <td>${(e.outputTokens || 0).toLocaleString()}</td>
-      <td>${(e.cacheReadTokens || 0).toLocaleString()}</td>
-      <td>${(e.cacheCreationTokens || 0).toLocaleString()}</td>
+      <td>${costDisplay}<div class="val-split">${sourceLabel}</div></td>
+      <td><div class="val-tok">${primaryInput.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryInput > 0 ? '+ ' + secondaryInput.toLocaleString() : ''}</div></td>
+      <td><div class="val-tok">${primaryOutput.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryOutput > 0 ? '+ ' + secondaryOutput.toLocaleString() : ''}</div></td>
+      <td><div class="val-tok">${primaryCR.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryCR > 0 ? '+ ' + secondaryCR.toLocaleString() : ''}</div></td>
+      <td><div class="val-tok">${primaryCC.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryCC > 0 ? '+ ' + secondaryCC.toLocaleString() : ''}</div></td>
       <td>
-        <button onclick="showModal(decodeURIComponent('${encoded}'))" class="icon-btn" title="All attributes">
-          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <button onclick="showModal(decodeURIComponent('${encoded}'))" class="icon-btn" title="Details">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
             <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
           </svg>
         </button>
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="10" class="empty">No events yet.</td></tr>';
+  }).join('') || '<tr><td colspan="9" class="empty">No events yet.</td></tr>';
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -279,6 +360,9 @@ app.get('/', (req, res) => {
     .badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:0.72rem;font-weight:600;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
     .model-badge{background:#ede9fe;color:#6d28d9}
     .qs-badge{background:#dbeafe;color:#1d4ed8}
+    .val-main{font-weight:700;color:#ef4444;font-size:0.9rem}
+    .val-tok{font-weight:600;color:#1e293b}
+    .val-split{font-size:0.7rem;color:#94a3b8;margin-top:2px}
     .icon-btn{background:none;border:none;cursor:pointer;color:#6366f1;padding:4px;border-radius:5px;display:inline-flex;align-items:center;transition:background 0.15s,color 0.15s}
     .icon-btn:hover{color:#4338ca;background:#e0e7ff}
     .overlay{position:fixed;inset:0;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;z-index:50;opacity:0;pointer-events:none;transition:opacity 0.2s;backdrop-filter:blur(4px)}
@@ -310,7 +394,7 @@ app.get('/', (req, res) => {
 </div>
 
 <div class="card" style="border-top:4px solid #8b5cf6">
-  <h2>Event Log <span style="font-weight:400;font-size:0.82rem;color:#64748b">— last 100, one row per request</span></h2>
+  <h2>Event Log <span style="font-weight:400;font-size:0.82rem;color:#64748b">— last ${limit} events (<a href="?v=all" style="color:#6366f1">view all</a>)</span></h2>
   <div class="scroll">
     <table>
       <thead><tr>
