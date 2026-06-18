@@ -1,0 +1,32 @@
+{
+  "userSessions": {
+    "shebin.ks@reizend.ai": {
+      "546ce252-4b87-4c9d-b9b4-58d04461f50e": {
+        "date": "2026-06-18T08:51:43.038Z",
+        "cost": 0.007021600000000001,
+        "inputTokens": 360,
+        "outputTokens": 306,
+        "cacheReadTokens": 49736,
+        "cacheCreationTokens": 79
+      }
+    }
+  },
+  "metricEvents": [
+    {
+      "date": "2026-06-18T08:51:43.038Z",
+      "email": "shebin.ks@reizend.ai",
+      "sessionId": "546ce252-4b87-4c9d-b9b4-58d04461f50e",
+      "costIncrement": 0.007021600000000001,
+      "inputTokens": 360,
+      "outputTokens": 306,
+      "cacheReadTokens": 49736,
+      "cacheCreationTokens": 79,
+      "model": "claude-haiku-4-5-20251001",
+      "querySource": "main",
+      "organizationId": "b9f9c595-59af-4b8a-8d28-ea9261d8ec77",
+      "userId": "71e1cf19ac29d3fdc8d5daceccd7d3ac8769d5ef7e661ac3ff924d237f49b78d",
+      "accountId": "user_01ALDdRh41TC1qsFqEZQKKgt",
+      "accountUuid": "4b912970-46f1-4cbd-bca7-2dc587bf8811"
+    }
+  ]
+}

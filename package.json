@@ -1,0 +1,26 @@
+{
+  "name": "claude-code-otel-prototype",
+  "version": "1.0.0",
+  "description": "Claude Code Performance Measurement System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js",
+    "sync:github": "node -e \"require('./src/jobs/github-sync').triggerGitHubSync()\""
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "dotenv": "^16.3.1",
+    "typeorm": "^0.3.17",
+    "pg": "^8.10.0",
+    "octokit": "^3.1.0",
+    "node-cron": "^3.0.3",
+    "reflect-metadata": "^0.1.13"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
