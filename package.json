@@ -6,6 +6,12 @@
   "scripts": {
     "start": "node server.js",
     "dev": "NODE_ENV=development node server.js",
+    "github": "node github-server.js",
+    "github:dev": "NODE_ENV=development node github-server.js",
+    "org": "node org-server.js",
+    "org:dev": "NODE_ENV=development node org-server.js",
+    "collect": "node github-data-collector.js",
+    "collect:dev": "NODE_ENV=development node github-data-collector.js",
     "sync:github": "node -e \"require('./src/jobs/github-sync').triggerGitHubSync()\""
   },
   "dependencies": {

@@ -1,0 +1,43 @@
+{
+  "fetchedAt": "2026-06-19T05:36:19.744Z",
+  "data": [
+    {
+      "repo": "first-project",
+      "number": 2,
+      "title": "resolve login error",
+      "author": "shebin-ks",
+      "state": "closed",
+      "merged": true,
+      "additions": 0,
+      "deletions": 0,
+      "filesChanged": 0,
+      "totalChanges": 0,
+      "createdAt": "2026-06-18T10:38:22Z",
+      "timestamp": 1781779102000,
+      "mergedAt": "2026-06-19T05:36:09Z",
+      "closedAt": "2026-06-19T05:36:09Z",
+      "timeToMergeHours": 18.963055555555556,
+      "url": "https://github.com/claude-metric-test-org/first-project/pull/2",
+      "reviewComments": 0
+    },
+    {
+      "repo": "first-project",
+      "number": 1,
+      "title": "implemented feature 1",
+      "author": "shebin-ks",
+      "state": "closed",
+      "merged": true,
+      "additions": 0,
+      "deletions": 0,
+      "filesChanged": 0,
+      "totalChanges": 0,
+      "createdAt": "2026-06-18T10:30:53Z",
+      "timestamp": 1781778653000,
+      "mergedAt": "2026-06-18T10:34:45Z",
+      "closedAt": "2026-06-18T10:34:45Z",
+      "timeToMergeHours": 0.06444444444444444,
+      "url": "https://github.com/claude-metric-test-org/first-project/pull/1",
+      "reviewComments": 0
+    }
+  ]
+}

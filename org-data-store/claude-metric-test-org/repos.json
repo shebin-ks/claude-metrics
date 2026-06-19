@@ -1,0 +1,15 @@
+{
+  "fetchedAt": "2026-06-19T05:36:19.743Z",
+  "data": [
+    {
+      "name": "first-project",
+      "url": "https://github.com/claude-metric-test-org/first-project",
+      "description": null
+    },
+    {
+      "name": "project2",
+      "url": "https://github.com/claude-metric-test-org/project2",
+      "description": null
+    }
+  ]
+}

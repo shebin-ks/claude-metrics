@@ -17,6 +17,7 @@ const DATA_FILE = path.join(__dirname, 'data.json');
 
 let userSessions = {};
 let metricEvents = [];
+let traceIdMap = {}; // Map trace IDs to request metadata
 
 if (fs.existsSync(DATA_FILE)) {
   try {
@@ -50,10 +51,43 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+app.post('/v1/traces', (req, res) => {
+  try {
+    const resourceSpans = req.body.resourceSpans;
+    if (!resourceSpans) return res.sendStatus(200);
+
+    resourceSpans.forEach(rs => {
+      rs.scopeSpans?.forEach(ss => {
+        ss.spans?.forEach(span => {
+          const traceId = span.traceId;
+          const spanAttrs = getAttributesObj(span.attributes);
+          const email = spanAttrs['user.email'];
+
+          if (traceId && email) {
+            traceIdMap[traceId] = {
+              email,
+              timestamp: new Date().toISOString(),
+              spanName: span.name
+            };
+          }
+        });
+      });
+    });
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('Error processing traces:', err);
+    res.sendStatus(500);
+  }
+});
+
 app.post('/v1/metrics', (req, res) => {
   try {
     const resourceMetrics = req.body.resourceMetrics;
     if (!resourceMetrics) return res.sendStatus(200);
+
+    console.log(`\n🟢 METRICS RECEIVED at ${new Date().toISOString()}`);
+    let totalEvents = 0;
 
     // One combined event per email+sessionId per OTLP batch
     const batchEvents = {};
@@ -131,8 +165,12 @@ app.post('/v1/metrics', (req, res) => {
     Object.values(batchEvents).forEach(evt => {
       if (evt.costIncrement > 0 || evt.inputTokens > 0 || evt.outputTokens > 0) {
         metricEvents.push({ date: now, ...evt });
+        totalEvents++;
+        const sourceType = evt.querySource === 'main' ? '🔴 MAIN' : evt.querySource === 'auxiliary' ? '🟡 AUX' : '🟠 ' + evt.querySource.toUpperCase();
+        console.log(`  ${sourceType} | ${evt.email} | cost: $${evt.costIncrement.toFixed(6)} | input: ${evt.inputTokens}`);
       }
     });
+    console.log(`📊 Total events in batch: ${totalEvents}\n`);
 
     saveData();
     res.sendStatus(200);
@@ -156,6 +194,8 @@ function getBatchEvent(batchEvents, email, sessionId, attrs) {
       // All available OTLP attributes
       model: attrs['model'] || null,
       querySource: attrs['query_source'] || null,
+      requestId: attrs['request.id'] || attrs['request_id'] || null,
+      traceId: attrs['trace.id'] || attrs['trace_id'] || null,
       organizationId: attrs['organization.id'] || null,
       userId: attrs['user.id'] || null,
       accountId: attrs['user.account_id'] || null,
@@ -165,6 +205,8 @@ function getBatchEvent(batchEvents, email, sessionId, attrs) {
   // Fill in attrs that may only appear on later data points
   if (!batchEvents[key].model && attrs['model']) batchEvents[key].model = attrs['model'];
   if (!batchEvents[key].querySource && attrs['query_source']) batchEvents[key].querySource = attrs['query_source'];
+  if (!batchEvents[key].requestId && (attrs['request.id'] || attrs['request_id'])) batchEvents[key].requestId = attrs['request.id'] || attrs['request_id'];
+  if (!batchEvents[key].traceId && (attrs['trace.id'] || attrs['trace_id'])) batchEvents[key].traceId = attrs['trace.id'] || attrs['trace_id'];
   return batchEvents[key];
 }
 
@@ -210,16 +252,47 @@ app.get('/', (req, res) => {
   const limitParam = req.query.v || req.query.limit;
   const limit = limitParam === 'all' ? metricEvents.length : (parseInt(limitParam) || 100);
 
-  // Deduplicate: 1 row per request (email+sessionId+second), track main vs auxiliary separately
+  // Deduplicate: 1 row per request (use "main" metrics as request boundaries)
   const deduped = {};
   const sortedEvents = [...metricEvents]
     .filter(e => e.costIncrement !== undefined)
     .sort((a, b) => new Date(b.date) - new Date(a.date));
 
+  // Find all "main" metrics (request markers)
+  const mainMetrics = {};
   sortedEvents.forEach(e => {
+    if (e.querySource === 'main') {
+      const key = `${e.email}::${e.sessionId}`;
+      if (!mainMetrics[key]) mainMetrics[key] = [];
+      mainMetrics[key].push({ date: new Date(e.date).getTime(), event: e });
+    }
+  });
+
+  sortedEvents.forEach(e => {
+    // Assign each event to the most recent "main" request
+    const userSessionKey = `${e.email}::${e.sessionId}`;
+    const mains = mainMetrics[userSessionKey] || [];
     const eventTime = new Date(e.date).getTime();
-    const roundedTime = Math.floor(eventTime / 1000) * 1000;
-    const key = `${e.email}::${e.sessionId}::${roundedTime}`;
+
+    // If this event IS a main, use its own timestamp
+    let mainTimestamp = null;
+    if (e.querySource === 'main') {
+      mainTimestamp = eventTime;
+    } else {
+      // Find the most recent main BEFORE this event
+      const sortedMains = mains.sort((a, b) => b.date - a.date); // Sort descending
+      for (const m of sortedMains) {
+        if (m.date < eventTime) { // Strictly less than (not equal)
+          mainTimestamp = m.date;
+          break;
+        }
+      }
+    }
+
+    // If no main found, use event time
+    if (!mainTimestamp) mainTimestamp = eventTime;
+
+    const key = `${e.email}::${e.sessionId}::${mainTimestamp}`;
     const source = e.querySource || 'unknown';
 
     if (deduped[key]) {
@@ -262,8 +335,13 @@ app.get('/', (req, res) => {
 
   const eventRows = recentEvents.map(e => {
     const bySourceInfo = {};
+    const sources = Object.keys(e.bySource || {});
     const mainMetrics = e.bySource?.main || { cost: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
     const auxMetrics = e.bySource?.auxiliary || { cost: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+
+    // For single custom source (not main/auxiliary), use it as primary
+    const customSource = sources.find(s => s !== 'main' && s !== 'auxiliary');
+    const customMetrics = customSource ? e.bySource[customSource] : { cost: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
 
     if (e.bySource) {
       for (const [source, metrics] of Object.entries(e.bySource)) {
@@ -291,37 +369,65 @@ app.get('/', (req, res) => {
       ? `<span class="badge model-badge" title="${e.model}">${e.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>`
       : '<span class="na">—</span>';
 
-    // Determine which sources are present
-    const hasBoth = mainMetrics.input > 0 && auxMetrics.input > 0;
-    const hasMain = mainMetrics.input > 0;
-    const hasAux = auxMetrics.input > 0;
-    const sourceLabel = hasBoth ? 'main · aux' : (hasAux ? 'auxiliary' : 'main');
+    // Build source label with consistent order: main → aux → subagent → others
+    const sourceOrder = ['main', 'auxiliary', 'subagent'];
+    const sourceLabels = [];
+    const orderedSources = [];
 
-    // Show costs: if both exist, show main then aux
-    const costDisplay = hasBoth
-      ? `<div class="val-main">$${mainMetrics.cost.toFixed(5)}</div><div style="font-size:0.7rem;color:#94a3b8">+ $${auxMetrics.cost.toFixed(5)}</div>`
-      : `<div class="val-main">$${e.costIncrement.toFixed(5)}</div>`;
+    if (e.bySource) {
+      // Add in priority order
+      sourceOrder.forEach(src => {
+        if (e.bySource[src]) orderedSources.push(src);
+      });
+      // Add any other sources not in the priority list
+      Object.keys(e.bySource).forEach(src => {
+        if (!sourceOrder.includes(src)) orderedSources.push(src);
+      });
 
-    // Show primary source on top, secondary below
-    const primaryInput = hasAux && !hasMain ? auxMetrics.input : mainMetrics.input;
-    const secondaryInput = hasBoth ? auxMetrics.input : 0;
-    const primaryOutput = hasAux && !hasMain ? auxMetrics.output : mainMetrics.output;
-    const secondaryOutput = hasBoth ? auxMetrics.output : 0;
-    const primaryCR = hasAux && !hasMain ? auxMetrics.cacheRead : mainMetrics.cacheRead;
-    const secondaryCR = hasBoth ? auxMetrics.cacheRead : 0;
-    const primaryCC = hasAux && !hasMain ? auxMetrics.cacheCreation : mainMetrics.cacheCreation;
-    const secondaryCC = hasBoth ? auxMetrics.cacheCreation : 0;
+      orderedSources.forEach(source => {
+        const metrics = e.bySource[source];
+        if (metrics.input > 0 || metrics.output > 0 || metrics.cacheRead > 0 || metrics.cacheCreation > 0) {
+          const label = source === 'main' ? 'main' : source === 'auxiliary' ? 'aux' : source;
+          sourceLabels.push(label);
+        }
+      });
+    }
+    const sourceLabel = sourceLabels.length > 0 ? sourceLabels.join(' · ') : 'unknown';
+
+    // Show total cost
+    const totalCost = Object.values(e.bySource || {}).reduce((sum, m) => sum + m.cost, 0);
+    const costDisplay = `<div class="val-main">$${totalCost.toFixed(5)}</div>`;
+
+    // Calculate totals and breakdown in the same order as sourceLabel
+    let totalInput = 0, totalOutput = 0, totalCR = 0, totalCC = 0;
+    const inputBreakdown = [], outputBreakdown = [], crBreakdown = [], ccBreakdown = [];
+
+    if (e.bySource && orderedSources.length > 0) {
+      orderedSources.forEach(source => {
+        const metrics = e.bySource[source];
+        totalInput += metrics.input;
+        totalOutput += metrics.output;
+        totalCR += metrics.cacheRead;
+        totalCC += metrics.cacheCreation;
+
+        if (metrics.input > 0) inputBreakdown.push(metrics.input.toLocaleString());
+        if (metrics.output > 0) outputBreakdown.push(metrics.output.toLocaleString());
+        if (metrics.cacheRead > 0) crBreakdown.push(metrics.cacheRead.toLocaleString());
+        if (metrics.cacheCreation > 0) ccBreakdown.push(metrics.cacheCreation.toLocaleString());
+      });
+    }
 
     return `
     <tr>
       <td class="dim">${new Date(e.date).toLocaleString()}<br><span style="font-size:0.68rem;color:#94a3b8">${new Date(e.date).toLocaleDateString()}</span></td>
       <td class="bold">${e.email}</td>
       <td>${modelBadge}</td>
-      <td>${costDisplay}<div class="val-split">${sourceLabel}</div></td>
-      <td><div class="val-tok">${primaryInput.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryInput > 0 ? '+ ' + secondaryInput.toLocaleString() : ''}</div></td>
-      <td><div class="val-tok">${primaryOutput.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryOutput > 0 ? '+ ' + secondaryOutput.toLocaleString() : ''}</div></td>
-      <td><div class="val-tok">${primaryCR.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryCR > 0 ? '+ ' + secondaryCR.toLocaleString() : ''}</div></td>
-      <td><div class="val-tok">${primaryCC.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8">${secondaryCC > 0 ? '+ ' + secondaryCC.toLocaleString() : ''}</div></td>
+      <td><div class="val-split">${sourceLabel}</div></td>
+      <td>${costDisplay}</td>
+      <td><div style="font-weight:700;color:#1e293b;font-size:0.95rem">${totalInput.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8;margin-top:3px">${inputBreakdown.join(' + ')}</div></td>
+      <td><div style="font-weight:700;color:#1e293b;font-size:0.95rem">${totalOutput.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8;margin-top:3px">${outputBreakdown.join(' + ')}</div></td>
+      <td><div style="font-weight:700;color:#1e293b;font-size:0.95rem">${totalCR.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8;margin-top:3px">${crBreakdown.join(' + ')}</div></td>
+      <td><div style="font-weight:700;color:#1e293b;font-size:0.95rem">${totalCC.toLocaleString()}</div><div style="font-size:0.7rem;color:#94a3b8;margin-top:3px">${ccBreakdown.join(' + ')}</div></td>
       <td>
         <button onclick="showModal(decodeURIComponent('${encoded}'))" class="icon-btn" title="Details">
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">

@@ -1,0 +1,65 @@
+{
+  "fetchedAt": "2026-06-18T10:09:02.577Z",
+  "data": [
+    {
+      "name": "Test",
+      "stars": 0,
+      "forks": 0,
+      "language": "TypeScript"
+    },
+    {
+      "name": "Assessment",
+      "stars": 0,
+      "forks": 0,
+      "language": null
+    },
+    {
+      "name": "automation-backend",
+      "stars": 0,
+      "forks": 0,
+      "language": "JavaScript"
+    },
+    {
+      "name": "automation-frontend-1",
+      "stars": 0,
+      "forks": 0,
+      "language": "TypeScript"
+    },
+    {
+      "name": "automation-frontend-2",
+      "stars": 0,
+      "forks": 0,
+      "language": "TypeScript"
+    },
+    {
+      "name": "close-tabs-vs",
+      "stars": 0,
+      "forks": 0,
+      "language": null
+    },
+    {
+      "name": "npm-package",
+      "stars": 0,
+      "forks": 0,
+      "language": null
+    },
+    {
+      "name": "word-of-wonders",
+      "stars": 0,
+      "forks": 0,
+      "language": "TypeScript"
+    },
+    {
+      "name": "reset-password_backend",
+      "stars": 0,
+      "forks": 0,
+      "language": "TypeScript"
+    },
+    {
+      "name": "reset-password_frontend",
+      "stars": 0,
+      "forks": 0,
+      "language": "TypeScript"
+    }
+  ]
+}
